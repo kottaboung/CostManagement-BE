@@ -4,6 +4,7 @@
     "express": "^4.21.0",
     "mysql2": "^3.11.3",
     "swagger": "^0.7.5",
+    "swagger-autogen": "^2.23.7",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1"
   }

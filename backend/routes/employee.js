@@ -12,37 +12,6 @@ const connection = mysql.createConnection({
   database: 'cost_database'
 });
 
-/**
- * @swagger
- * tags:
- *   - name: Employees
- *     description: API endpoints related to employees
- */
-
-/**
- * @swagger
- * /costdata/addemployee:
- *   post:
- *     tags: [Employees]
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               EmployeeName:
- *                 type: string
- *               EmployeePosition:
- *                 type: string
- *               EmployeeCost:
- *                 type: number
- *     responses:
- *       201:
- *         description: Employee created successfully
- *       500:
- *         description: Error occurred while creating employee
- */
-
 router.post('/addemployee', (req, res) => {
     const { EmployeeName, EmployeePosition, EmployeeCost } = req.body;
   
@@ -58,37 +27,7 @@ router.post('/addemployee', (req, res) => {
     });
   });
 
-/**
- * @swagger
- * /costdata/getemployees:
- *   get:
- *     tags: [Employees]
- *     responses:
- *       200:
- *         description: List of employees
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: success
- *                 message:
- *                   type: string
- *                   example: Employees fetched successfully
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       EmployeeName:
- *                          type: string
- *                       EmployeePosition:
- *                          type: string
- *                       EmployeeCost:
- *                          type: integer
- */
+
 router.get('/getemployees', (req, res) => {
     connection.query('SELECT `EmployeeID`, `EmployeeName`, `EmployeePosition`, `EmployeeCost` FROM `employees` ', (err, results) => {
         if (err) {
@@ -99,28 +38,7 @@ router.get('/getemployees', (req, res) => {
     })
 })
 
-/**
- * @swagger
- * /costdata/injectemployee:
- *   post:
- *     tags: [Employees]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               EmployeeID:
- *                 type: integer
- *               ProjectID:
- *                 type: integer
- *               responses:
- *       200:
- *         description: Employee added successfully
- *       500:
- *         description: Error occurred while adding employee
- */
+
 router.post('/injectemployee', (req, res) => {
   const { EmployeeID, ProjectID } = req.body;
 

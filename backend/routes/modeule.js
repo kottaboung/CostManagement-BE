@@ -11,64 +11,7 @@ const connection = mysql.createConnection({
     database: 'cost_database'
   });
 
-  /**
- * @swagger
- * tags:
- *   - name: Modules
- */
-
-/**
- * @swagger
- * /costdata/GetAllModules:
- *   get:
- *     tags: 
- *       - Modules
- *     responses:
- *       200:
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                 message:
- *                   type: string
- *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       ModuleID:
- *                         type: integer
- *                       ModuleName:
- *                         type: string
- *                       ModuleAddDate:
- *                         type: string
- *                         format: date-time
- *                       ModuleDueDate:
- *                         type: string
- *                         format: date-time
- *                       ModuleActive:
- *                         type: boolean
- *                       ProjectID:
- *                         type: integer
- *       500:
- *         description: Error fetching modules
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   example: error
- *                 message:
- *                   type: string
- *                   example: An error occurred while fetching modules
- *                 data:
- *                   type: "null"
- */
+ 
 router.get('/GetAllModules', (req, res) => {
     connection.query('SELECT ModuleID, ModuleName, ModuleAddDate, ModuleDueDate, ModuleActive, ProjectID FROM modules', (err, response) => {
         if (err) {
@@ -79,36 +22,7 @@ router.get('/GetAllModules', (req, res) => {
     });
 });
 
-/**
- * @swagger
- * /costdata/CreateNewModule:
- *   post:
- *     tags: [Modules]
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               ModuleName:
- *                 type: string
- *               ModuleAddDate:
- *                 type: string
- *                 format: date
- *               ModuleDueDate:
- *                 type: string
- *                 format: datecd ..
- 
- *               ModuleActive:
- *                  type: boolean
- *               ProjectID:
- *                  type: integer
- *     responses:
- *       201:
- *         description: Module created successfully
- *       500:
- *         description: Error occurred while creating module
- */
+
 router.post('/CreateNewModule', (req, res) => {
     const { ModuleName , ModuleAddDate, ModuleDueDate , ModuleActive , ProjectID } = req.body
 
