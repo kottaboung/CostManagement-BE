@@ -1,24 +1,23 @@
-const swaggerAutogen = require('swagger-autogen')();
+const swaggerUi = require('swagger-ui-express');
+const swaggerJsdoc = require('swagger-jsdoc');
 
-const doc = {
-  info: {
-    title: 'Cost Management API',
-    description: 'API documentation for Cost Management project',
+const swaggerOptions = {
+  swaggerDefinition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Cost Management API',
+      version: '1.0.0',
+      description: 'API documentation for Cost Management project',
+    },
+    servers: [{ url: 'http://localhost:3000' }],
   },
-  host: 'localhost:3000',
-  schemes: ['http'],
+  apis: ['./routes/*.js'], 
 };
 
-// Change the outputFile to swagger.json
-const outputFile = './swagger.json'; // Corrected to swagger.json
-const endpointsFiles = [
-  './routes/modeule.js',
-  './routes/employee.js',
-  './routes/project.js',
-  './routes/master.js',
-];
+const swaggerDocs = swaggerJsdoc(swaggerOptions);
 
-// Generate the Swagger documentation
-swaggerAutogen(outputFile, endpointsFiles, doc).then(() => {
-  require('./server');
-});
+function setupSwagger(app) {
+  app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+}
+
+module.exports = setupSwagger;

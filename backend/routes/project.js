@@ -12,6 +12,50 @@ const connection = mysql.createConnection({
   database: 'cost_database'
 });
 
+/**
+ * @swagger
+ * tags:
+ *   - name: Projects
+ *     description: API endpoints related to projects
+ */
+
+/**
+ * @swagger
+ * /costdata/getprojects:
+ *   get:
+ *     tags: [Projects]
+ *     responses:
+ *       200:
+ *         description: List of projects
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: success
+ *                 message:
+ *                   type: string
+ *                   example: Projects fetched successfully
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       ProjectID:
+ *                         type: integer
+ *                       ProjectName:
+ *                         type: string
+ *                       ProjectStart:
+ *                         type: string
+ *                         format: date-time
+ *                       ProjectEnd:
+ *                         type: string
+ *                         format: date-time
+ *                       ProjectStatus:
+ *                         type: integer
+ */
 router.get('/getprojects', (req, res) => {
   connection.query('SELECT `ProjectID`, `ProjectName`, `ProjectStart`, `ProjectEnd`, `ProjectStatus` FROM `projects`', (err, results) => {
     if (err) {
@@ -22,7 +66,31 @@ router.get('/getprojects', (req, res) => {
   });
 });
 
-
+/**
+ * @swagger
+ * /costdata/addproject:
+ *   post:
+ *     tags: [Projects]
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ProjectName:
+ *                 type: string
+ *               ProjectStart:
+ *                 type: string
+ *                 format: date
+ *               ProjectEnd:
+ *                 type: string
+ *                 format: date
+ *               ProjectStatus:
+ *                 type: integer
+ *     responses:
+ *       200:
+ *         description: Project created successfully
+ */
 router.post('/addproject', (req, res) => {
   const { ProjectName, ProjectStart, ProjectEnd, ProjectStatus } = req.body;
 
