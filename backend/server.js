@@ -20,7 +20,7 @@ const head = "/costdata"
 // API routes
 app.use(head +'/', masterRoutes);
 app.use(head +'/', projectRoutes);
-app.use(head +'/' ,employeeRoutes);
+app.use(head +'/', employeeRoutes);
 app.use(head +'/', moduleRoutes);
 
 const PORT = process.env.PORT || 3000;

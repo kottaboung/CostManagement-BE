@@ -115,8 +115,11 @@ router.get('/getemployees', (req, res) => {
  *                 type: integer
  *               ProjectID:
  *                 type: integer
- *               responses:
- *       200:
+ *             required:
+ *               - EmployeeID
+ *               - ProjectID
+ *     responses:
+ *       201:
  *         description: Employee added successfully
  *       500:
  *         description: Error occurred while adding employee
@@ -125,7 +128,7 @@ router.post('/injectemployee', (req, res) => {
   const { EmployeeID, ProjectID } = req.body;
 
   // Input validation
-  if (!EmployeeID || !ProjectID) {
+  if (EmployeeID === undefined || ProjectID === undefined) {
     return res.status(400).json({
       status: 'error',
       message: 'EmployeeID and ProjectID are required fields',
@@ -145,13 +148,70 @@ router.post('/injectemployee', (req, res) => {
       });
     }
 
-    // Success response
-    res.status(200).json({
-      status: 'success',
-      message: 'Employee added to project successfully',
-      data: { EmployeeID, ProjectID },
-    });
+    // Corrected to use `results` instead of `results`
+    sendResponse(res, 201, 'success', 'Employee added successfully', { EmployeeProjectID: results.insertId, EmployeeID, ProjectID });
   });
 });
+
+
+
+/**
+ * @swagger
+ * /costdata/AddEmployeeToModule:
+ *   post:
+ *     tags: [Employees]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               EmployeeID:
+ *                 type: integer
+ *               ModuleID:
+ *                 type: integer
+ *               ProjectID:
+ *                 type: integer
+ *             required:
+ *               - EmployeeID
+ *               - ModuleID
+ *               - ProjectID
+ *     responses:
+ *       201:
+ *         description: Employee added successfully
+ *       500:
+ *         description: Error occurred while adding employee
+ */
+
+router.post('/AddEmployeeToModule', (req, res) => {
+  const { EmployeeID, ModuleID, ProjectID } = req.body;
+
+  // Fixed the condition here to check all required fields
+  if (EmployeeID === undefined || ModuleID === undefined || ProjectID === undefined) {
+    return res.status(400).json({
+      status: 'error',
+      message: 'EmployeeID, ModuleID, and ProjectID are required fields',
+    });
+  }
+
+  const sql = 'INSERT INTO `employeemodules` (`EmployeeID`, `ModuleID`, `ProjectID`) VALUES (?, ?, ?)';
+  const values = [EmployeeID, ModuleID, ProjectID];
+
+  connection.query(sql, values, (err, result) => {
+    if (err) {
+      console.error('Error inserting employee:', err);
+      return res.status(500).json({
+        status: 'error',
+        message: 'An error occurred while inserting the employee into the module',
+        error: err.message,
+      });
+    }
+
+    // Corrected to use `result` instead of `results`
+    sendResponse(res, 201, 'success', 'Employee added successfully', { EmployeeModuleID: result.insertId, EmployeeID, ModuleID, ProjectID });
+  });
+});
+
 
 module.exports = router;

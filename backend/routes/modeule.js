@@ -97,8 +97,7 @@ router.get('/GetAllModules', (req, res) => {
  *                 format: date
  *               ModuleDueDate:
  *                 type: string
- *                 format: datecd ..
- 
+ *                 format: date
  *               ModuleActive:
  *                  type: boolean
  *               ProjectID:
