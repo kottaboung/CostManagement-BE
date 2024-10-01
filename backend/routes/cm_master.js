@@ -36,6 +36,11 @@ const connection = mysql.createConnection({
  *  - name: Module2
  */
 
+/**
+ * @swagger
+ * tags:
+ *  - name: Event2
+ */
 
 /**
  * @swagger
@@ -399,7 +404,7 @@ router.post('/InjectEmployeeToProject', (req, res) => {
  * /costdata/CreateNewModule:
  *  post:
  *      tags:
- *      - Master2
+ *      - Module2
  *      requestBody:
  *          required: true
  *          content:
@@ -539,7 +544,7 @@ router.post('/CreateNewModule', (req, res) => {
  * /costdata/CreateNewEvent:
  *  post:
  *      tags:
- *      - Master2
+ *      - Event2
  *      requestBody:
  *          required: true
  *          content:
@@ -663,6 +668,128 @@ router.post('/CreateNewEvent', (req, res) => {
         }).catch(err => {
             console.error('Error adding employees to event', err);
             sendResponse(res, 500, 'error', 'Error adding employee to event', null);
+        });
+    });
+});
+
+
+/**
+ * @swagger
+ * /costdata/GetMasterData:
+ *   get:
+ *     tags:
+ *       - Master2  # Correctly formatted tag
+ *     responses:
+ *       200:
+ *         description: Successfully fetched master data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   ProjectId:
+ *                     type: integer
+ *                   ProjectName:
+ *                     type: string
+ *                   ProjectStart:
+ *                     type: string
+ *                     format: date
+ *                   ProjectEnd:
+ *                     type: string
+ *                     format: date
+ *                   ProjectStatus:
+ *                     type: number
+ *                   Modules:
+ *                     type: array
+ *                     items:
+ *                       type: object
+ *                       properties:
+ *                         ModuleId:
+ *                           type: integer
+ *                         ModuleName:
+ *                           type: string
+ *                         ModuleAddDate:
+ *                           type: string
+ *                           format: date
+ *                         ModuleDueDate:
+ *                           type: string
+ *                           format: date
+ *                         Employees:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               EmployeeId:
+ *                                 type: integer
+ *                               EmployeeName:
+ *                                 type: string
+ *                               EmployeePosition:
+ *                                 type: string
+ *                               EmployeeCost:
+ *                                 type: integer
+ *                                 format: float
+ *       500:
+ *         description: An error occurred while fetching master data
+ */
+router.get('/GetMasterData', (req, res) => {
+    const projectsql = 'SELECT `ProjectId`, `ProjectName`, `ProjectStart`, `ProjectEnd`, `ProjectStatus` FROM `Projects`';
+
+    connection.query(projectsql, (err, projects) => {
+        if(err) {
+            console.error('Error : ', err)
+            return sendResponse(res, 500, 'error', 'error fecting projects ', null);
+        }
+
+        if(projects.length === 0) {
+            return sendResponse(res, 200, 'success', 'no project found');
+        }
+
+        const moduleQueries = projects.map(project => {
+            return new Promise((reslove, reject) => {
+                const modulesql = 'SELECT * FROM `Modules` WHERE `ProjectId` = ?';
+                connection.query(modulesql, [project.ProjectId], (err, modules) => {
+                    if(err) {
+                        console.error('Error fetching modules', err);
+                        return reject();
+                    }
+
+                    project.Modules = modules
+                    if(modules.length === 0 ) {
+                        return reslove(project);
+                    }
+
+                    const employeequeries = modules.map(module  => {
+                        return new Promise((reslove, reject) => {
+                            const employeesql = `
+                                SELECT e.* 
+                                FROM Employees e
+                                JOIN module_employees me ON e.EmployeeId = me.EmployeeId
+                                WHERE me.ModuleId = ?
+                            `;
+                            connection.query(employeesql, [module.ModuleId], (err, employees) => {
+                                if (err) {
+                                    console.error('Error fetching employees for module:', err);
+                                    return reject(err);
+                                }
+
+                                module.Employees = employees;
+                                reslove(module);
+                            });
+                        });
+                    });
+                    Promise.all(employeequeries).then(() => {
+                        reslove(project)
+                    }).catch(reject);
+                });
+            });
+        });
+        Promise.all(moduleQueries).then(()=> {
+            sendResponse(res, 200, 'success', 'Master data fetched successfully', projects);
+        }).catch(err => {
+            console.error('Error fetching Master data', err);
+            sendResponse(res, 500, 'error', 'Error fetching master da ta', null);
         });
     });
 });
