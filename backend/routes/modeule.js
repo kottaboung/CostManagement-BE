@@ -81,7 +81,7 @@ router.get('/GetAllModules', (req, res) => {
 
 /**
  * @swagger
- * /costdata/CreateNewModule:
+ * /costdata/CreateNewModuleTest:
  *   post:
  *     tags: [Modules]
  *     requestBody:
@@ -108,7 +108,7 @@ router.get('/GetAllModules', (req, res) => {
  *       500:
  *         description: Error occurred while creating module
  */
-router.post('/CreateNewModule', (req, res) => {
+router.post('/CreateNewModuleTest', (req, res) => {
     const { ModuleName , ModuleAddDate, ModuleDueDate , ModuleActive , ProjectID } = req.body
 
     const sql = 'INSERT INTO `modules` (`ModuleName`, `ModuleAddDate`, `ModuleDueDate`, `ModuleActive`, `ProjectID`) VALUES (?, ?, ?, ?, ?)';
