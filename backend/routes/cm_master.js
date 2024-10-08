@@ -453,83 +453,286 @@ router.post('/InjectEmployeeToProject', (req, res) => {
  *                                  type: array
  *                                  items:
  *                                      type: integer
+ *                              totalModuleCost:
+ *                                  type: number
  *          400:
  *              description: Module Name, Add Date, Due Date, Project ID, and at least one Employee ID are required
  *          500:
  *              description: Error creating module or adding employees
  */
 router.post('/CreateNewModule', (req, res) => {
-    const { ModuleName, ModuleAddDate, ModuleDueDate, ProjectId, EmployeeIds } = req.body; // Use EmployeeIds as an array
-
+    const { ModuleName, ModuleAddDate, ModuleDueDate, ProjectId, EmployeeIds } = req.body;
+    debugger
     // Validate required fields
     if (!ModuleName || !ModuleAddDate || !ModuleDueDate || !ProjectId || !EmployeeIds || !Array.isArray(EmployeeIds) || EmployeeIds.length === 0) {
         return sendResponse(res, 400, 'error', 'Module Name, Add Date, Due Date, Project ID, and at least one Employee ID are required', null);
     }
 
-    const moduleSql = 'INSERT INTO `Modules` (`ModuleName`, `ModuleAddDate`, `ModuleDueDate`, `ProjectId`) VALUES (?, ?, ?, ?)';
-    const moduleValues = [ModuleName, ModuleAddDate, ModuleDueDate, ProjectId];
-
-    connection.query(moduleSql, moduleValues, (err, result) => {
+    // Check for duplicate module name
+    const checkDuplicateModuleSql = 'SELECT * FROM `Modules` WHERE `ModuleName` = ? AND `ProjectId` = ?';
+    connection.query(checkDuplicateModuleSql, [ModuleName, ProjectId], (err, result) => {
         if (err) {
-            console.error('Error creating module:', err);
-            return sendResponse(res, 500, 'error', 'Error creating module', null);
+            console.error('Error checking duplicate module name:', err);
+            return sendResponse(res, 500, 'error', 'Error checking duplicate module name', null);
         }
 
-        const ModuleId = result.insertId; // Get the newly created ModuleId
+        if (result.length > 0) {
+            return sendResponse(res, 400, 'error', `Module with the name "${ModuleName}" already exists in Project ID ${ProjectId}`, null);
+        }
 
-        const insertPromises = EmployeeIds.map(EmployeeId => {
-            // Check if the employee is associated with the project
-            const checkEmployeeInProject = 'SELECT * FROM `Project_Employees` WHERE `EmployeeId` = ? AND `ProjectId` = ?';
-            
-            return new Promise((resolve, reject) => {
-                connection.query(checkEmployeeInProject, [EmployeeId, ProjectId], (err, result) => {
-                    if (err) {
-                        console.error('Error checking employee in project:', err);
-                        return reject(err);
-                    }
+        // Start transaction
+        connection.beginTransaction((err) => {
+            if (err) {
+                console.error('Error starting transaction:', err);
+                return sendResponse(res, 500, 'error', 'Error starting transaction', null);
+            }
 
-                    // If the employee is in the project, check if they are already assigned to the module
-                    if (result.length > 0) {
-                        const checkModuleEmployeeSql = 'SELECT * FROM `Module_Employees` WHERE `EmployeeId` = ? AND `ModuleId` = ?';
+            // Insert the module
+            const moduleSql = 'INSERT INTO `Modules` (`ModuleName`, `ModuleAddDate`, `ModuleDueDate`, `ProjectId`) VALUES (?, ?, ?, ?)';
+            const moduleValues = [ModuleName, ModuleAddDate, ModuleDueDate, ProjectId];
 
-                        connection.query(checkModuleEmployeeSql, [EmployeeId, ModuleId], (err, result) => {
+            connection.query(moduleSql, moduleValues, (err, result) => {
+                if (err) {
+                    console.error('Error creating module:', err);
+                    return connection.rollback(() => {
+                        sendResponse(res, 500, 'error', 'Error creating module', null);
+                    });
+                }
+
+                const ModuleId = result.insertId; // Get the newly created ModuleId
+
+                // Assign employees to module
+                const insertPromises = EmployeeIds.map(EmployeeId => {
+                    const checkEmployeeInProject = 'SELECT * FROM `Project_Employees` WHERE `EmployeeId` = ? AND `ProjectId` = ?';
+
+                    return new Promise((resolve, reject) => {
+                        connection.query(checkEmployeeInProject, [EmployeeId, ProjectId], (err, result) => {
                             if (err) {
-                                console.error('Error checking employee assignment:', err);
+                                console.error('Error checking employee in project:', err);
                                 return reject(err);
                             }
 
-                            // If the employee is not assigned to this module, insert them
-                            if (result.length === 0) {
-                                const moduleEmployeeSql = 'INSERT INTO `Module_Employees` (`EmployeeId`, `ModuleId`) VALUES (?, ?)';
-                                connection.query(moduleEmployeeSql, [EmployeeId, ModuleId], (err) => {
+                            if (result.length > 0) {
+                                const checkModuleEmployeeSql = 'SELECT * FROM `Module_Employees` WHERE `EmployeeId` = ? AND `ModuleId` = ?';
+
+                                connection.query(checkModuleEmployeeSql, [EmployeeId, ModuleId], (err, result) => {
                                     if (err) {
-                                        console.error('Error adding employee to module:', err);
+                                        console.error('Error checking employee assignment:', err);
                                         return reject(err);
                                     }
-                                    resolve(); // Resolve promise if insertion is successful
+
+                                    if (result.length === 0) {
+                                        const moduleEmployeeSql = 'INSERT INTO `Module_Employees` (`EmployeeId`, `ModuleId`, `addDate`, `dueDate`) VALUES (?, ?, ?, ?)';
+                                        connection.query(moduleEmployeeSql, [EmployeeId, ModuleId, ModuleAddDate, ModuleDueDate], (err) => {
+                                            if (err) {
+                                                console.error('Error adding employee to module:', err);
+                                                return reject(err);
+                                            }
+                                            resolve();
+                                        });
+                                    } else {
+                                        resolve();
+                                    }
                                 });
                             } else {
-                                resolve(); // Resolve promise if employee is already assigned (skip insertion)
+                                console.warn(`Employee ID ${EmployeeId} is not in Project ID ${ProjectId}. Skipping...`);
+                                resolve();
                             }
                         });
+                    });
+                });
+
+                // Wait for all employee assignments to complete
+                Promise.all(insertPromises)
+                    .then(() => {
+                        // Calculate employee costs
+                        const daysInModule = (new Date(ModuleDueDate) - new Date(ModuleAddDate)) / (1000 * 60 * 60 * 24); // Number of days in the module
+                        const employeeCostsSql = 'SELECT SUM(employeeCost) AS totalEmployeeCost FROM `Employees` WHERE `EmployeeId` IN (?)';
+
+                        connection.query(employeeCostsSql, [EmployeeIds], (err, result) => {
+                            if (err) {
+                                console.error('Error calculating employee costs:', err);
+                                return connection.rollback(() => {
+                                    sendResponse(res, 500, 'error', 'Error calculating employee costs', null);
+                                });
+                            }
+
+                            const totalEmployeeCost = result[0].totalEmployeeCost || 0; // Handle case where cost is null
+                            const totalModuleCost = daysInModule * totalEmployeeCost;
+
+                            // Update project cost
+                            const updateProjectCostSql = 'UPDATE `Projects` SET `projectCost` = `projectCost` + ? WHERE `ProjectId` = ?';
+                            connection.query(updateProjectCostSql, [totalModuleCost, ProjectId], (err) => {
+                                if (err) {
+                                    console.error('Error updating project cost:', err);
+                                    return connection.rollback(() => {
+                                        sendResponse(res, 500, 'error', 'Error updating project cost', null);
+                                    });
+                                }
+
+                                // Commit transaction
+                                connection.commit((err) => {
+                                    if (err) {
+                                        console.error('Error committing transaction:', err);
+                                        return connection.rollback(() => {
+                                            sendResponse(res, 500, 'error', 'Error committing transaction', null);
+                                        });
+                                    }
+
+                                    sendResponse(res, 201, 'success', 'Module created successfully with employees assigned and project cost updated', {
+                                        ModuleId,
+                                        ModuleName,
+                                        ModuleAddDate,
+                                        ModuleDueDate,
+                                        ProjectId,
+                                        EmployeeIds,
+                                        totalModuleCost
+                                    });
+                                });
+                            });
+                        });
+                    })
+                    .catch(err => {
+                        console.error('Error adding employees to module:', err);
+                        return connection.rollback(() => {
+                            sendResponse(res, 500, 'error', 'Error adding employees to module', null);
+                        });
+                    });
+            });
+        });
+    });
+});
+
+
+/**
+ * @swagger
+ * /costdata/UpdateModuleEmployees:
+ *  patch:
+ *      tags:
+ *      - Module2
+ *      requestBody:
+ *          required: true
+ *          content:
+ *              application/json:
+ *                  schema:
+ *                      type: object
+ *                      required:
+ *                          - ModuleId
+ *                          - EmployeeIds
+ *                      properties:
+ *                          ModuleId:
+ *                              type: integer
+ *                          EmployeeIds:
+ *                              type: array
+ *                              items:
+ *                                  type: integer
+ *      responses:
+ *          200:
+ *              content:
+ *                  application/json:
+ *                      schema:
+ *                          type: object
+ *                          properties:
+ *                              totalModuleCost:
+ *                                  type: number
+ *                              addedEmployees:
+ *                                  type: array
+ *                                  items:
+ *                                      type: integer
+ *          400:
+ *              description: At least one Employee ID is required, or there are other validation errors (e.g., module start date validation failure)
+ *          404:
+ *              description: Module not found
+ *          500:
+ *              description: Error updating module, adding employees, or calculating the project cost
+ */
+router.patch('/UpdateModuleEmployees', (req, res) => {
+    const { ModuleId, EmployeeIds } = req.body;
+
+    // Validate required fields
+    if (!EmployeeIds || !Array.isArray(EmployeeIds) || EmployeeIds.length === 0) {
+        return sendResponse(res, 400, 'error', 'At least one Employee ID is required', null);
+    }
+
+    // Retrieve module details
+    const moduleSql = 'SELECT ModuleAddDate, ModuleDueDate, ProjectId FROM `Modules` WHERE `ModuleId` = ?';
+    connection.query(moduleSql, [ModuleId], (err, moduleResult) => {
+        if (err) {
+            console.error('Error retrieving module:', err);
+            return sendResponse(res, 500, 'error', 'Error retrieving module', null);
+        }
+
+        if (moduleResult.length === 0) {
+            return sendResponse(res, 404, 'error', 'Module not found', null);
+        }
+
+        const { ModuleAddDate, ModuleDueDate, ProjectId } = moduleResult[0];
+        const today = new Date();
+
+        let daysInModule = (new Date(ModuleDueDate) - today) / (1000 * 60 * 60 * 24); // Days from today until ModuleDueDate
+
+        if (daysInModule < 0) {
+            return sendResponse(res, 400, 'error', 'Module has already ended. Cannot add employees.', null);
+        }
+
+        // Format dates as 'YYYY-MM-DD HH:MM:SS'
+        const formattedToday = today.toISOString().slice(0, 19).replace('T', ' ');
+        const formattedModuleDueDate = new Date(ModuleDueDate).toISOString().slice(0, 19).replace('T', ' ');
+
+        // Add new employees to the module
+        const insertPromises = EmployeeIds.map(EmployeeId => {
+            return new Promise((resolve, reject) => {
+                const checkModuleEmployeeSql = 'SELECT * FROM `Module_Employees` WHERE `EmployeeId` = ? AND `ModuleId` = ?';
+                connection.query(checkModuleEmployeeSql, [EmployeeId, ModuleId], (err, result) => {
+                    if (err) {
+                        console.error('Error checking employee assignment:', err);
+                        return reject(err);
+                    }
+
+                    if (result.length === 0) {
+                        // Employee is new, insert with AddDate and DueDate
+                        const moduleEmployeeSql = 'INSERT INTO `Module_Employees` (`EmployeeId`, `ModuleId`, `AddDate`, `DueDate`) VALUES (?, ?, ?, ?)';
+                        connection.query(moduleEmployeeSql, [EmployeeId, ModuleId, formattedToday, formattedModuleDueDate], (err) => {
+                            if (err) {
+                                console.error('Error adding employee to module:', err);
+                                return reject(err);
+                            }
+                            resolve();
+                        });
                     } else {
-                        console.warn(`Employee ID ${EmployeeId} is not in Project ID ${ProjectId}. Skipping...`);
-                        resolve(); // Resolve promise if employee is not in the project (skip insertion)
+                        // Employee already exists, do nothing
+                        resolve();
                     }
                 });
             });
         });
 
-        // Step 3: Wait for all employee insertions to complete
         Promise.all(insertPromises)
             .then(() => {
-                sendResponse(res, 201, 'success', 'Module created successfully with employees assigned', {
-                    ModuleId,
-                    ModuleName,
-                    ModuleAddDate,
-                    ModuleDueDate,
-                    ProjectId,
-                    EmployeeIds
+                // Calculate costs for the newly added employees
+                const employeeCostsSql = 'SELECT SUM(EmployeeCost) AS totalEmployeeCost FROM `Employees` WHERE `EmployeeId` IN (?)';
+                connection.query(employeeCostsSql, [EmployeeIds], (err, result) => {
+                    if (err) {
+                        console.error('Error calculating employee costs:', err);
+                        return sendResponse(res, 500, 'error', 'Error calculating employee costs', null);
+                    }
+
+                    const totalEmployeeCost = result[0].totalEmployeeCost || 0; // Handle case where cost is null
+                    const totalModuleCost = (daysInModule * totalEmployeeCost).toFixed(2);
+
+                    // Update project cost
+                    const updateProjectCostSql = 'UPDATE `Projects` SET `projectCost` = `projectCost` + ? WHERE `ProjectId` = ?';
+                    connection.query(updateProjectCostSql, [totalModuleCost, ProjectId], (err) => {
+                        if (err) {
+                            console.error('Error updating project cost:', err);
+                            return sendResponse(res, 500, 'error', 'Error updating project cost', null);
+                        }
+
+                        sendResponse(res, 200, 'success', 'Employees added successfully and project cost updated', {
+                            totalModuleCost,
+                            addedEmployees: EmployeeIds
+                        });
+                    });
                 });
             })
             .catch(err => {
@@ -538,6 +741,8 @@ router.post('/CreateNewModule', (req, res) => {
             });
     });
 });
+
+
 
 /**
  * @swagger
@@ -793,6 +998,246 @@ router.get('/GetMasterData', (req, res) => {
         });
     });
 });
+
+
+/**
+ * @swagger
+ * /costdata/GetChartData:
+ *   get:
+ *     tags:
+ *       - Master2
+ *     summary: Get the oldest project start date and associated project details by month.
+ *     responses:
+ *       200:
+ *         description: Successfully retrieved the oldest date and project details.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   year:
+ *                     type: integer
+ *                   chart:
+ *                     type: array
+ *                     items:
+ *                       type: object
+ *                       properties:
+ *                         month:
+ *                           type: string
+ *                         detail:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               ProjectName:
+ *                                 type: string
+ *                               Cost:
+ *                                 type: number
+ *                         total:
+ *                           type: number
+ *       500:
+ *         description: Database query error.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *       404:
+ *         description: No data found.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ */
+router.get('/GetChartData', async (req, res) => {
+    const dateSql = 'SELECT MIN(`ProjectStart`) AS OldestDate, MAX(`ProjectEnd`) AS LatestDate FROM `Projects`';
+
+    connection.query(dateSql, async (err, result) => {
+        if (err) {
+            console.error('Error:', err);
+            return sendResponse(res, 500, 'error', 'Database query error', null);
+        }
+
+        // Check if a result was returned
+        if (result && result.length > 0) {
+            const StartDate = new Date(result[0].OldestDate);
+            const StartYear = StartDate.getFullYear();
+            const currentYear = new Date().getFullYear();
+            const currentMonth = new Date().getMonth();
+            const monthNames = [
+                'January', 'February', 'March', 'April', 'May', 'June', 
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
+            const months = {};
+
+            for (let year = StartYear; year <= currentYear; year++) {
+                months[year] = monthNames.map((monthName, index) => ({
+                    month: monthName,
+                    detail: [],
+                    total: 0,
+                }));
+
+                if (year === currentYear) {
+                    months[year] = months[year].slice(0, currentMonth + 1); // Cut off future months in the current year
+                }
+            }
+
+            // Fetch all projects
+            const projectsSql = 'SELECT `ProjectId`, `ProjectName`, `ProjectStart`, `ProjectEnd` FROM `Projects`';
+            connection.query(projectsSql, async (err, projects) => {
+                if (err) {
+                    console.error('Error fetching projects:', err);
+                    return sendResponse(res, 500, 'error', 'Error fetching project details', null);
+                }
+
+                // Process each project
+                for (const project of projects) {
+                    const projectStart = new Date(project.ProjectStart);
+                    const projectEnd = new Date(project.ProjectEnd);
+                    const projectStartYear = projectStart.getFullYear();
+                    const projectEndYear = projectEnd.getFullYear();
+
+                    // Calculate the active months for the project
+                    for (let year = projectStartYear; year <= projectEndYear; year++) {
+                        const startMonth = (year === projectStartYear) ? projectStart.getMonth() : 0;
+                        const endMonth = (year === projectEndYear) ? Math.min(projectEnd.getMonth(), currentMonth) : 11;
+
+                        for (let month = startMonth; month <= endMonth; month++) {
+                            const monthData = months[year][month];
+                            const existingDetail = monthData.detail.find(detail => detail.ProjectName === project.ProjectName);
+
+                            if (!existingDetail) {
+                                const moduleCost = await calculateModuleCost(project.ProjectId);
+                                const formattedModuleCost = parseFloat(moduleCost); // Ensure the cost is a number
+
+                                monthData.detail.push({
+                                    ProjectName: project.ProjectName,
+                                    Cost: formattedModuleCost.toFixed(2), // Format to 00.00
+                                });
+
+                                // Update the total cost for the month
+                                monthData.total = (parseFloat(monthData.total) + formattedModuleCost).toFixed(2);
+                            }
+                        }
+                    }
+                }
+
+                // Prepare the final chart array
+                const chartData = Object.keys(months).map(year => ({
+                    year: year,
+                    chart: months[year],
+                }));
+
+                sendResponse(res, 200, 'success', 'Oldest date retrieved', chartData);
+            });
+        } else {
+            sendResponse(res, 404, 'error', 'No data found', null);
+        }
+    });
+});
+
+
+// Function to calculate the total cost for a project, summing the costs of all modules
+async function calculateModuleCost(projectId) {
+    return new Promise((resolve, reject) => {
+        const moduleSql = 'SELECT `ModuleId`, `ModuleAddDate`, `ModuleDueDate` FROM `Modules` WHERE ProjectId = ?';
+        connection.query(moduleSql, [projectId], async (err, modules) => {
+            if (err) {
+                console.error('Error fetching modules:', err);
+                return reject(err);
+            }
+
+            let totalModuleCost = 0; // Initialize total cost
+
+            // Process each module
+            for (const module of modules) {
+                const moduleCost = await calculateModuleEmployeeCost(module);
+                totalModuleCost += parseFloat(moduleCost); // Ensure moduleCost is treated as a number
+            }
+
+            resolve(totalModuleCost.toFixed(2)); // Format total cost to 00.00
+        });
+    });
+}
+
+// Function to calculate the cost for a specific module
+async function calculateModuleEmployeeCost(module) {
+    const { ModuleId, ModuleAddDate, ModuleDueDate } = module; // Destructure module details
+
+    return new Promise((resolve, reject) => {
+        const employeeSql = 'SELECT `EmployeeId`, `AddDate`, `DueDate` FROM `Module_Employees` WHERE ModuleId = ?';
+        connection.query(employeeSql, [ModuleId], async (err, employees) => {
+            if (err) {
+                console.error('Error fetching employees:', err);
+                return reject(err);
+            }
+
+            let totalEmployeeCost = 0; // Initialize total employee cost
+
+            // Process each employee
+            const employeePromises = employees.map(async (employee) => {
+                const { EmployeeId, AddDate, DueDate } = employee;
+                const addDate = AddDate || ModuleAddDate; // Use employee's AddDate or module's AddDate
+                let dueDate = DueDate || ModuleDueDate; // Use employee's DueDate or module's DueDate
+
+                // Use current date if dueDate is in the future or null
+                const currentDate = new Date();
+                dueDate = (new Date(dueDate) > currentDate) ? currentDate : new Date(dueDate);
+
+                // Calculate mandays
+                const mandays = calculateMandays(new Date(addDate), new Date(dueDate));
+
+                // Get employee cost
+                const employeeCost = await getEmployeeCost(EmployeeId);
+
+                // Calculate module cost for this employee
+                return (mandays * employeeCost).toFixed(2); // Format module cost to 00.00
+            });
+
+            try {
+                const costs = await Promise.all(employeePromises); // Await all promises
+                totalEmployeeCost = costs.reduce((sum, cost) => sum + parseFloat(cost), 0); // Ensure costs are numbers
+                resolve(totalEmployeeCost.toFixed(2)); // Return formatted cost
+            } catch (error) {
+                console.error('Error calculating employee costs:', error);
+                reject(error);
+            }
+        });
+    });
+}
+
+// Function to calculate mandays between two dates
+function calculateMandays(startDate, endDate) {
+    const timeDiff = endDate - startDate; // Difference in time (milliseconds)
+    const daysDiff = timeDiff / (1000 * 3600 * 24); // Convert to days
+    return Math.max(0, daysDiff); // Return 0 if daysDiff is negative
+}
+
+// Function to get individual employee cost
+function getEmployeeCost(employeeId) {
+    return new Promise((resolve, reject) => {
+        const costSql = 'SELECT `EmployeeCost` FROM `Employees` WHERE EmployeeId = ?';
+        connection.query(costSql, [employeeId], (err, results) => {
+            if (err) {
+                console.error('Error fetching employee cost:', err);
+                return reject(err);
+            }
+            if (results && results.length > 0) {
+                resolve(Number(results[0].EmployeeCost).toFixed(2)); // Return cost formatted to 00.00
+            } else {
+                resolve('0.00'); // Return 0 if no cost found, formatted as 00.00
+            }
+        });
+    });
+}
+
 
 
 module.exports = router;
