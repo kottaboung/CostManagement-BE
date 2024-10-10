@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const mysql = require('mysql2');
 const { sendResponse } = require('../responseHelper');
+const { param } = require('express-validator');
+const moment = require('moment');
 
 // Configure MySQL connection
 const connection = mysql.createConnection({
@@ -1237,6 +1239,354 @@ function getEmployeeCost(employeeId) {
         });
     });
 }
+
+/**
+ * @swagger
+ * /costdata/GetModuleById:
+ *   post:
+ *     tags:
+ *       - Module2
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ProjectName:
+ *                 type: string
+ *                 example: "New Project"
+ *               ModuleName:
+ *                 type: string
+ *                 example: "New Module"
+*     responses:
+ *       200:
+ *         description: Project and modules retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     project:
+ *                       type: object
+ *                       properties:
+ *                         ProjectId:
+ *                           type: integer
+ *                         ProjectName:
+ *                           type: string
+ *                     modules:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           ModuleId:
+ *                             type: integer
+ *                           ModuleName:
+ *                             type: string
+ *                           ModuleAddDate:
+ *                             type: string
+ *                             format: date
+ *                           ModuleDueDate:
+ *                             type: string
+ *                             format: date
+ *                           Employees:
+ *                             type: array
+ *                             items:
+ *                               type: object
+ *                               properties:
+ *                                 EmployeeName:
+ *                                   type: string
+ *                                 EmployeePosition:
+ *                                   type: string
+ *                                 EmployeeCost:
+ *                                   type: number
+ *       400:
+ *         description: ProjectId or ProjectName must be provided
+ *       404:
+ *         description: No projects found
+ *       500:
+ *         description: Database query error
+ */
+router.post('/GetModuleById', (req, res) => {
+    const { ProjectId, ProjectName, ModuleName } = req.body;
+
+    // Check if either ProjectId or ProjectName is provided
+    if (ProjectId || ProjectName) {
+        const checkProject = `
+            SELECT ProjectName, ProjectId 
+            FROM Projects 
+            WHERE (ProjectId = ? OR ProjectName = ?)
+        `;
+
+        connection.query(checkProject, [ProjectId, ProjectName], (err, results) => {
+            if (err) {
+                console.error('Error fetching project:', err);
+                return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+            }
+
+            // Check if any projects were found
+            if (results.length > 0) {
+                const projectId = results[0].ProjectId; // Get the ProjectId of the found project
+
+                // Determine the SQL query based on whether ModuleName is provided
+                let selectModule;
+                const queryParams = [projectId];
+
+                if (ModuleName) {
+                    // If ModuleName is provided, fetch only that module
+                    selectModule = `
+                        SELECT ModuleId, ModuleName, ModuleAddDate, ModuleDueDate 
+                        FROM Modules 
+                        WHERE ProjectId = ? AND ModuleName = ?
+                    `;
+                    queryParams.push(ModuleName); // Add ModuleName to the parameters
+                } else {
+                    // If ModuleName is not provided, fetch all modules for the project
+                    selectModule = `
+                        SELECT ModuleId, ModuleName, ModuleAddDate, ModuleDueDate 
+                        FROM Modules 
+                        WHERE ProjectId = ?
+                    `;
+                }
+
+                // Execute the query to get modules
+                connection.query(selectModule, queryParams, (err, modules) => {
+                    if (err) {
+                        console.error('Error fetching modules:', err);
+                        return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+                    }
+
+                    // Format the dates in the modules response
+                    const formattedModules = modules.map(module => ({
+                        ModuleId: module.ModuleId, // Include ModuleId for fetching employees
+                        ModuleName: module.ModuleName,
+                        ModuleAddDate: moment(module.ModuleAddDate).format('YYYY-MM-DD'), // Format ModuleAddDate
+                        ModuleDueDate: moment(module.ModuleDueDate).format('YYYY-MM-DD')  // Format ModuleDueDate
+                    }));
+
+                    // Create a function to fetch employees for each module
+                    const getEmployeesForModule = (moduleId) => {
+                        return new Promise((resolve, reject) => {
+                            const employeeInModule = `
+                                SELECT EmployeeId 
+                                FROM Module_Employees 
+                                WHERE ModuleId = ?
+                            `;
+
+                            connection.query(employeeInModule, [moduleId], (err, moduleEmployees) => {
+                                if (err) return reject(err);
+
+                                // Fetch employee details for each employeeId
+                                const employeeQueries = moduleEmployees.map(emp => {
+                                    return new Promise((resolveEmp, rejectEmp) => {
+                                        const getEmployee = `
+                                            SELECT EmployeeName, EmployeePosition, EmployeeCost 
+                                            FROM Employees 
+                                            WHERE EmployeeId = ?
+                                        `;
+
+                                        connection.query(getEmployee, [emp.EmployeeId], (err, employeeDetails) => {
+                                            if (err) return rejectEmp(err);
+                                            resolveEmp(employeeDetails[0]); // Assuming only one employee per ID
+                                        });
+                                    });
+                                });
+
+                                // Resolve all employee queries
+                                Promise.all(employeeQueries)
+                                    .then(employees => resolve(employees))
+                                    .catch(reject);
+                            });
+                        });
+                    };
+
+                    // Create an array of promises for fetching employees for each module
+                    const employeePromises = formattedModules.map(module => 
+                        getEmployeesForModule(module.ModuleId).then(employees => ({
+                            ...module,
+                            Employees: employees // Add employee details to the module
+                        }))
+                    );
+
+                    // Resolve all module and employee queries
+                    Promise.all(employeePromises)
+                        .then(modulesWithEmployees => {
+                            // Return the project and its modules with employee details
+                            return res.status(200).json({
+                                status: 'success',
+                                message: 'Project and modules retrieved successfully',
+                                data: {
+                                    project: results[0], // Project details
+                                    modules: modulesWithEmployees // Formatted module details with employees
+                                }
+                            });
+                        })
+                        .catch(err => {
+                            console.error('Error fetching employees:', err);
+                            return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+                        });
+                });
+            } else {
+                return res.status(404).json({ status: 'error', message: 'No projects found', data: null });
+            }
+        });
+    } else {
+        return res.status(400).json({ status: 'error', message: 'ProjectId or ProjectName must be provided', data: null });
+    }
+});
+
+/**
+ * @swagger
+ * /costdata/GetEmployeeInProject:
+ *   post:
+ *     tags:
+ *       - Employee 2
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               ProjectName:
+ *                 type: string
+ *                 example: "New Project"
+ *     responses:
+ *       200:
+ *         description: Employees retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     employees:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           EmployeeName:
+ *                             type: string
+ *                             example: "John Doe"
+ *                           EmployeePosition:
+ *                             type: string
+ *                             example: "Developer"
+ *                           EmployeeCost:
+ *                             type: number
+ *                             example: 5000
+ *       400:
+ *         description: ProjectId or ProjectName must be provided
+ *       404:
+ *         description: No project found
+ *       500:
+ *         description: Database query error
+ */
+router.post('/GetEmployeeInProject', (req, res) => {
+    const { ProjectName, ProjectId } = req.body;
+
+    // Validate input
+    if (!ProjectId && !ProjectName) {
+        return res.status(400).json({ status: 'error', message: 'ProjectId or ProjectName must be provided', data: null });
+    }
+
+    // Check if the project exists
+    const checkProject = `
+        SELECT ProjectId 
+        FROM Projects 
+        WHERE (ProjectId = ? OR ProjectName = ?)
+    `;
+
+    connection.query(checkProject, [ProjectId, ProjectName], (err, results) => {
+        if (err) {
+            console.error('Error fetching project:', err);
+            return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+        }
+
+        // Check if any projects were found
+        if (results.length > 0) {
+            const projectId = results[0].ProjectId; // Get the ProjectId of the found project
+
+            // Fetch all employees associated with the project
+            const checkProjectEmployee = `
+                SELECT EmployeeId 
+                FROM Project_Employees 
+                WHERE ProjectId = ?
+            `;
+
+            connection.query(checkProjectEmployee, [projectId], (err, projectEmployees) => {
+                if (err) {
+                    console.error('Error fetching project employees:', err);
+                    return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+                }
+
+                // Prepare an array to hold employee details
+                const employees = [];
+
+                // If there are no employees, return an empty array
+                if (projectEmployees.length === 0) {
+                    return res.status(200).json({
+                        status: 'success',
+                        message: 'No employees found for this project',
+                        data: {
+                            employees: []
+                        }
+                    });
+                }
+
+                // Fetch employee details for each employee in the project
+                const employeeQueries = projectEmployees.map(projectEmployee => {
+                    return new Promise((resolve, reject) => {
+                        const getEmployeeInProject = `
+                            SELECT EmployeeName, EmployeePosition, EmployeeCost 
+                            FROM Employees 
+                            WHERE EmployeeId = ?
+                        `;
+
+                        connection.query(getEmployeeInProject, [projectEmployee.EmployeeId], (err, employeeDetails) => {
+                            if (err) {
+                                reject(err); // Reject if there's an error
+                            } else {
+                                resolve(employeeDetails[0]); // Resolve with employee details
+                            }
+                        });
+                    });
+                });
+
+                // Wait for all employee queries to complete
+                Promise.all(employeeQueries)
+                    .then(results => {
+                        // Return the project employees
+                        return res.status(200).json({
+                            status: 'success',
+                            message: 'Employees retrieved successfully',
+                            data: {
+                                employees: results
+                            }
+                        });
+                    })
+                    .catch(err => {
+                        console.error('Error fetching employee details:', err);
+                        return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+                    });
+            });
+        } else {
+            return res.status(404).json({ status: 'error', message: 'No project found', data: null });
+        }
+    });
+});
 
 
 
