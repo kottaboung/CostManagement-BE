@@ -11,7 +11,6 @@ const swaggerOptions = {
     },
     servers: [{ url: 'http://localhost:3000' }],
   },
-  apis: ['./routes/*.js'], 
   apis: ['./routes/cm_master.js'], 
 };
 
