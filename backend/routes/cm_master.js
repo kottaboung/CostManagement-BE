@@ -13,7 +13,6 @@ const connection = mysql.createConnection({
   password: 'root',
   database: 'cm_database'
 });
-
 /**
  * @swagger
  * tags:

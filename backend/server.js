@@ -12,9 +12,7 @@ app.use(cors()); // Allow all origins for testing
 // Swagger setup
 setupSwagger(app);
 
-const head = "/costdata"
-
-app.use(head +'/', master2Routes);
+app.use('/costdata', master2Routes);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
