@@ -9,15 +9,15 @@ const swaggerOptions = {
       version: '1.0.0',
       description: 'API documentation for Cost Management project',
     },
-    servers: [{ url: 'http://localhost:3000' }],
+    servers: [{ url: 'https://localhost:3000' }],
   },
-  apis: ['./routes/cm_master.js'], 
+  apis: ['./routes/cm_master.js'],
 };
 
 const swaggerDocs = swaggerJsdoc(swaggerOptions);
 
 function setupSwagger(app) {
-  app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+  app.use('/api-Docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 }
 
 module.exports = setupSwagger;
