@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const setupSwagger = require('./swagger');
-
 const master2Routes = require('./routes/cm_master');
 
 const app = express();

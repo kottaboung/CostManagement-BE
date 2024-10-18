@@ -339,12 +339,12 @@ router.post('/CreateNewEmployee', (req, res) => {
  *                  schema:
  *                      type: object
  *                      properties:
- *                          EmployeeId:
- *                              type: integer
- *                              example: 1
- *                          ProjectId:
- *                              type: integer
- *                              example: 1
+ *                          EmployeeName:
+ *                              type: string
+ *                              example: "Main"
+ *                          ProjectName:
+ *                              type: string
+ *                              example: "New Project"
  *      responses:
  *          201:
  *              description: Employee added to Project successfully
@@ -367,38 +367,74 @@ router.post('/CreateNewEmployee', (req, res) => {
  *              description: Error adding Employee to Project
  */
 router.post('/InjectEmployeeToProject', (req, res) => {
-    const { EmployeeId, ProjectId } = req.body
+    const { EmployeeName, ProjectName } = req.body;
 
-    if (!EmployeeId || !ProjectId) {
-        return sendResponse(res, 400, 'error', 'EmployeeId and ProjectId are required', null);
+    if (!EmployeeName || !ProjectName) {
+        return sendResponse(res, 400, 'error', 'EmployeeName and ProjectName are required', null);
     }
 
-    const checksql = 'SELECT * FROM `Project_Employees` WHERE `EmployeeId` = ? AND `ProjectId` = ?';
-    connection.query(checksql, [EmployeeId, ProjectId], (err, result) => {
-        if(err) {
-            console.error('Error', err);
-            return sendResponse(res, 500, 'error', 'error checking employee', null);
-        }
-        if(result.length > 0) {
-            return sendResponse(res, 400, 'error', 'Employee is already in project', null);
+    // Fetch Project by ProjectName
+    const fetchProj = 'SELECT ProjectId, ProjectName FROM Projects WHERE ProjectName = ?';
+    connection.query(fetchProj, [ProjectName], (err, pro) => {
+        if (err) {
+            console.error('Error fetching project', err);
+            return sendResponse(res, 500, 'error', 'Database error fetching project', null);
         }
 
-        const sql = 'INSERT INTO `Project_Employees` (`EmployeeId`, `ProjectId`) VALUES (?,?)';
-        const values = [EmployeeId, ProjectId];
+        if (pro.length === 0) {
+            return sendResponse(res, 404, 'error', 'Project not found', null);
+        }
 
-        connection.query(sql,values, (err, result) => {
-            if(err) {
-                console.error('Error',err);
-                return sendResponse(res, 500, 'error', 'Error add Employee to Project', null);
+        const ProjectId = pro[0].ProjectId;
+
+        // Fetch Employee by EmployeeName
+        const fetchEm = 'SELECT EmployeeId, EmployeeName FROM Employees WHERE EmployeeName = ?';
+        connection.query(fetchEm, [EmployeeName], (err, em) => {
+            if (err) {
+                console.error('Error fetching employee', err);
+                return sendResponse(res, 500, 'error', 'Database error fetching employee', null);
             }
-            sendResponse(res, 201, 'success', 'Employee added to Project successfully', {
-                EmployeeId,
-                ProjectId,
-                ProjectEmployeeId: result.insertId 
+
+            if (em.length === 0) {
+                return sendResponse(res, 404, 'error', 'Employee not found', null);
+            }
+
+            const EmployeeId = em[0].EmployeeId;
+
+            // Check if Employee is already in the project
+            const checksql = 'SELECT * FROM `Project_Employees` WHERE `EmployeeId` = ? AND `ProjectId` = ?';
+            connection.query(checksql, [EmployeeId, ProjectId], (err, result) => {
+                if (err) {
+                    console.error('Error checking employee in project', err);
+                    return sendResponse(res, 500, 'error', 'Error checking employee in project', null);
+                }
+
+                if (result.length > 0) {
+                    return sendResponse(res, 400, 'error', 'Employee is already in the project', null);
+                }
+
+                // Add Employee to the project
+                const sql = 'INSERT INTO `Project_Employees` (`EmployeeId`, `ProjectId`) VALUES (?,?)';
+                const values = [EmployeeId, ProjectId];
+
+                connection.query(sql, values, (err, result) => {
+                    if (err) {
+                        console.error('Error adding employee to project', err);
+                        return sendResponse(res, 500, 'error', 'Error adding employee to project', null);
+                    }
+
+                    // Return success response
+                    sendResponse(res, 201, 'success', 'Employee added to Project successfully', {
+                        EmployeeId,
+                        ProjectId,
+                        ProjectEmployeeId: result.insertId
+                    });
+                });
             });
-        }); 
+        });
     });
 });
+
 
 /**
  * @swagger
@@ -1549,7 +1585,7 @@ router.post('/GetEmployeeInProject', (req, res) => {
                 const employeeQueries = projectEmployees.map(projectEmployee => {
                     return new Promise((resolve, reject) => {
                         const getEmployeeInProject = `
-                            SELECT EmployeeName, EmployeePosition, EmployeeCost 
+                            SELECT EmployeeId, EmployeeName, EmployeePosition, EmployeeCost 
                             FROM Employees 
                             WHERE EmployeeId = ?
                         `;
