@@ -304,27 +304,58 @@ router.post('/CreateNewProject', (req, res) => {
  *              description: Error creating employee
  */
 router.post('/CreateNewEmployee', (req, res) => {
-    const { EmployeeName, EmployeePosition, EmployeeCost } = req.body;
+    const { EmployeeName, RoleId, EmployeePosition, EmployeeCost } = req.body;
 
-    if (!EmployeeName || !EmployeePosition || EmployeeCost == null) {
+    // Check for required fields
+    if (!EmployeeName || EmployeeCost == null) {
         return sendResponse(res, 400, 'error', 'Missing required fields', null);
     }
 
-    const sql = 'INSERT INTO `Employees` (`EmployeeName`, `EmployeePosition`, `EmployeeCost`) VALUES (?, ?, ?)';
-    const values = [EmployeeName, EmployeePosition, EmployeeCost];
+    let finalRoleId = RoleId; // This will store the final RoleId to insert into the Employees table
 
-    connection.query(sql, values, (err, result) => {
-        if(err) {
-            console.error('Error Create New Employee', err );
-            return sendResponse(res, 500, 'error', 'Error creating new employee', null);
-        }
-        sendResponse(res, 200, 'success', 'Created new employee success', {
-            EmployeeId: result.insertId,
-            EmployeeName,
-            EmployeePosition,
-            EmployeeCost
+    // If RoleId is not provided, fetch it based on EmployeePosition
+    if (!RoleId && EmployeePosition) {
+        const positionQuery = 'SELECT GeneralId FROM General WHERE GeneralName = ?';
+        connection.query(positionQuery, [EmployeePosition], (err, results) => {
+            if (err) {
+                console.error('Error fetching GeneralId for EmployeePosition:', err);
+                return sendResponse(res, 500, 'error', 'Error fetching GeneralId', null);
+            }
+
+            // Check if a matching GeneralId was found
+            if (results.length > 0) {
+                finalRoleId = results[0].GeneralId; // Assign GeneralId to finalRoleId
+            } else {
+                return sendResponse(res, 400, 'error', 'Invalid EmployeePosition provided', null);
+            }
+
+            // Proceed to insert the new employee
+            insertNewEmployee();
         });
-    });
+    } else {
+        // If RoleId is provided, proceed to insert the new employee
+        insertNewEmployee();
+    }
+
+    // Function to insert a new employee into the database
+    function insertNewEmployee() {
+        const sql = 'INSERT INTO `Employees` (`EmployeeName`, `RoleId`, `EmployeeCost`) VALUES (?, ?, ?)';
+        const values = [EmployeeName, finalRoleId, EmployeeCost];
+
+        connection.query(sql, values, (err, result) => {
+            if (err) {
+                console.error('Error creating new employee:', err);
+                return sendResponse(res, 500, 'error', 'Error creating new employee', null);
+            }
+
+            sendResponse(res, 200, 'success', 'Created new employee successfully', {
+                EmployeeId: result.insertId,
+                EmployeeName,
+                RoleId: finalRoleId,
+                EmployeeCost
+            });
+        });
+    }
 });
 
 /**
@@ -779,6 +810,195 @@ router.patch('/UpdateModuleEmployees', (req, res) => {
     });
 });
 
+router.post('/GetEventInProject', (req, res) => {
+    const { ProjectName, ProjectId } = req.body;
+
+    // Validate input
+    if (!ProjectId && !ProjectName) {
+        return res.status(400).json({ status: 'error', message: 'ProjectId or ProjectName must be provided', data: null });
+    }
+
+    const checkProject = `
+        SELECT ProjectId, ProjectName
+        FROM Projects 
+        WHERE (ProjectId = ? OR ProjectName = ?)
+    `;
+
+    connection.query(checkProject, [ProjectId, ProjectName], (err, projects) => {
+        if (err) {
+            console.error('Error fetching project:', err);
+            return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+        }
+
+        if (projects.length === 0) {
+            return res.status(404).json({ status: 'error', message: 'Project not found', data: null });
+        }
+
+        // Assuming only one project is returned, get the ProjectId
+        const projectId = projects[0].ProjectId;
+
+        // Fetch events related to the project
+        const getEvents = `
+            SELECT EventId, EventTitle, EventDescription, EventStart, EventEnd 
+            FROM events 
+            WHERE ProjectId = ?
+        `;
+
+        connection.query(getEvents, [projectId], (err, events) => {
+            if (err) {
+                console.error('Error fetching events:', err);
+                return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+            }
+
+            // Prepare to return employee data for each event
+            const eventPromises = events.map(event => {
+                return new Promise((resolve) => {
+                    const getEmployees = `
+                        SELECT e.EmployeeId, e.EmployeeName, 
+                               CAST(e.EmployeeCost AS SIGNED) AS EmployeeCost, 
+                               g.GeneralName AS EmployeePosition
+                        FROM Employees e
+                        LEFT JOIN General g ON g.GeneralId = e.RoleId
+                        WHERE e.EmployeeId IN (
+                            SELECT EmployeeId FROM event_employees WHERE EventId = ?
+                        )
+                    `;
+                    connection.query(getEmployees, [event.EventId], (err, employees) => {
+                        if (err) {
+                            console.error('Error fetching employees:', err);
+                            resolve({ EventId: event.EventId, Employees: [], ...event }); // Resolve with an empty array on error
+                        } else {
+                            resolve({ EventId: event.EventId, Employees: employees, ...event });
+                        }
+                    });
+                });
+            });
+
+            // Wait for all employee data to be fetched
+            Promise.all(eventPromises).then(eventData => {
+                // Prepare final data structure
+                const responseData = eventData.map(({ EventId, EventTitle, EventDescription, EventStart, EventEnd, Employees }) => ({
+                    EventId,
+                    EventTitle,
+                    EventDescription,
+                    EventStart,
+                    EventEnd,
+                    Employees
+                }));
+
+                res.status(200).json({ status: 'success', message: 'Data retrieved successfully', data: responseData });
+            }).catch(err => {
+                console.error('Error fetching employee data:', err);
+                res.status(500).json({ status: 'error', message: 'Error retrieving employee data', data: null });
+            });
+        });
+    });
+});
+
+router.post('/GetEventPerEmployee', (req, res) => {
+    const { ProjectName, ProjectId } = req.body;
+
+    // Validate input
+    if (!ProjectId && !ProjectName) {
+        return res.status(400).json({ status: 'error', message: 'ProjectId or ProjectName must be provided', data: null });
+    }
+
+    const checkProject = `
+        SELECT ProjectId, ProjectName
+        FROM Projects 
+        WHERE (ProjectId = ? OR ProjectName = ?)
+    `;
+
+    connection.query(checkProject, [ProjectId, ProjectName], (err, projects) => {
+        if (err) {
+            console.error('Error fetching project:', err);
+            return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+        }
+
+        if (projects.length === 0) {
+            return res.status(404).json({ status: 'error', message: 'Project not found', data: null });
+        }
+
+        // Assuming only one project is returned, get the ProjectId
+        const projectId = projects[0].ProjectId;
+
+        // Fetch all employees related to the project
+        const getEmployees = `
+            SELECT e.EmployeeId, e.EmployeeName, 
+                   CAST(e.EmployeeCost AS SIGNED) AS EmployeeCost, 
+                   g.GeneralName AS EmployeePosition
+            FROM Employees e
+            LEFT JOIN General g ON g.GeneralId = e.RoleId
+            WHERE e.EmployeeId IN (
+                SELECT DISTINCT EmployeeId FROM event_employees ee
+                INNER JOIN events ev ON ee.EventId = ev.EventId
+                WHERE ev.ProjectId = ?
+            )
+        `;
+
+        connection.query(getEmployees, [projectId], (err, employees) => {
+            if (err) {
+                console.error('Error fetching employees:', err);
+                return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+            }
+
+            if (employees.length === 0) {
+                return res.status(404).json({ status: 'error', message: 'No employees found for the project', data: null });
+            }
+
+            // Prepare to fetch events for each employee
+            const employeePromises = employees.map(employee => {
+                return new Promise((resolve) => {
+                    const getEvents = `
+                        SELECT ev.EventId, ev.EventTitle, ev.EventDescription, ev.EventStart, ev.EventEnd
+                        FROM events ev
+                        INNER JOIN event_employees ee ON ev.EventId = ee.EventId
+                        WHERE ee.EmployeeId = ?
+                    `;
+                    connection.query(getEvents, [employee.EmployeeId], (err, events) => {
+                        if (err) {
+                            console.error('Error fetching events:', err);
+                            resolve({
+                                EmployeeId: employee.EmployeeId,
+                                EmployeeData: {
+                                    EmployeeName: employee.EmployeeName,
+                                    EmployeeCost: employee.EmployeeCost,
+                                    EmployeePosition: employee.EmployeePosition,
+                                    Events: [] // Empty array on error
+                                }
+                            });
+                        } else {
+                            resolve({
+                                EmployeeId: employee.EmployeeId,
+                                EmployeeData: {
+                                    EmployeeName: employee.EmployeeName,
+                                    EmployeeCost: employee.EmployeeCost,
+                                    EmployeePosition: employee.EmployeePosition,
+                                    Events: events.map(event => ({
+                                        EventId: event.EventId,
+                                        EventTitle: event.EventTitle,
+                                        EventDescription: event.EventDescription,
+                                        EventStart: event.EventStart,
+                                        EventEnd: event.EventEnd
+                                    }))
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+
+            // Wait for all employee-event data to be fetched
+            Promise.all(employeePromises).then(employeeData => {
+                res.status(200).json({ status: 'success', message: 'Data retrieved successfully', data: employeeData });
+            }).catch(err => {
+                console.error('Error fetching employee-event data:', err);
+                res.status(500).json({ status: 'error', message: 'Error retrieving employee-event data', data: null });
+            });
+        });
+    });
+});
+
 
 
 /**
@@ -841,77 +1061,116 @@ router.patch('/UpdateModuleEmployees', (req, res) => {
  *                  description: Error creating event or adding employees
  */
 router.post('/CreateNewEvent', (req, res) => {
-    const { EventTitle, EventDescription, EventStart, EventEnd, ProjectId , EmployeeIds} = req.body
+    const { EventTitle, EventDescription, EventStart, EventEnd, ProjectId, ProjectName, EmployeeIds } = req.body;
 
-    if(!EventTitle || !EventStart || !EventEnd || !ProjectId || !EmployeeIds || !Array.isArray(EmployeeIds) || EmployeeIds.length === 0) {
+    // Validate input
+    if (!EventTitle || !EventStart || !EventEnd || (!ProjectId && !ProjectName) || !EmployeeIds || !Array.isArray(EmployeeIds) || EmployeeIds.length === 0) {
         return sendResponse(res, 400, 'error', 'event is required', null);
     }
 
-    const sqlInsert = 'INSERT INTO `Events` (`EventTitle`, `EventDescription`, `EventStart`, `EventEnd`, `ProjectId`) VALUES (?, ?, ?, ?, ?)';
-    const eventitem = [EventTitle, EventDescription, EventStart, EventEnd, ProjectId];
+    // Check for duplicate EmployeeIds
+    const uniqueEmployeeIds = new Set(EmployeeIds);
+    if (uniqueEmployeeIds.size !== EmployeeIds.length) {
+        return sendResponse(res, 400, 'error', 'Duplicate EmployeeIds are not allowed', null);
+    }
 
-    connection.query(sqlInsert,eventitem, (err, result) => {
-        if(err) {
-            console.error('Error', err);
-            return sendResponse(res, 500, 'error', 'Error add new events', null);
-        }
-        
-        const EventId = result.insertId
+    // Step 1: Find ProjectId if only ProjectName is provided
+    let projectIdToUse = ProjectId;
 
-        const insertPromises = EmployeeIds.map(EmployeeId => {
-            const checkEmployeeInProject = 'SELECT * FROM `Project_Employees` WHERE `EmployeeId` = ? AND `ProjectId` = ?';
+    if (!ProjectId && ProjectName) {
+        const findProjectId = `
+            SELECT ProjectId FROM Projects 
+            WHERE ProjectName = ?
+        `;
+        connection.query(findProjectId, [ProjectName], (err, projectResults) => {
+            if (err) {
+                console.error('Error finding project by name:', err);
+                return sendResponse(res, 500, 'error', 'Database query error', null);
+            }
 
-            return new Promise((reslove, reject) => {
-                connection.query(checkEmployeeInProject, [EmployeeId, ProjectId], (err, result) => {
-                    if(err) {
-                        console.error('Error checking employee in project:', err);
-                        return reject(err);
-                    }
+            if (projectResults.length === 0) {
+                return sendResponse(res, 404, 'error', 'Project not found', null);
+            }
 
-                    if(result.length > 0) {
-                        const checkEventEmployeesql = 'SELECT * FROM `Event_Employees` WHERE `EmployeeId` = ? AND `EventId` = ? ';
+            projectIdToUse = projectResults[0].ProjectId;
 
-                        connection.query(checkEventEmployeesql, [EmployeeId, EventId], (err, result) => {
-                            if(err) {
-                                console.error('Error check employee events : ', err);
-                                return reject(err);
-                            }
+            // Now that we have the ProjectId, we can continue with event creation
+            createEvent();
+        });
+    } else {
+        // If ProjectId is provided, we can directly create the event
+        createEvent();
+    }
 
-                            if(result.length === 0) {
-                                const eventsEmployeesql = 'INSERT INTO `Event_Employees` (`EmployeeId`, `EventId`) VALUES (?, ?)';
-                                connection.query(eventsEmployeesql, [EmployeeId, EventId], (err) => {
-                                    if(err) {
-                                        console.error('Error Add ing Employee to Event', err);
-                                        return reject(err);
-                                    }
-                                    reslove();                                    
-                                });
-                            } else {
-                                reslove();
-                            }
-                        });
-                    } else {
-                        console.warn(`EmployeeId ${EmployeeId} is not in project `);
-                        reslove();
-                    }
+    function createEvent() {
+        const sqlInsert = 'INSERT INTO `Events` (`EventTitle`, `EventDescription`, `EventStart`, `EventEnd`, `ProjectId`) VALUES (?, ?, ?, ?, ?)';
+        const eventItem = [EventTitle, EventDescription, EventStart, EventEnd, projectIdToUse];
+
+        connection.query(sqlInsert, eventItem, (err, result) => {
+            if (err) {
+                console.error('Error', err);
+                return sendResponse(res, 500, 'error', 'Error adding new event', null);
+            }
+
+            const EventId = result.insertId;
+
+            const insertPromises = EmployeeIds.map(EmployeeId => {
+                const checkEmployeeInProject = 'SELECT * FROM `Project_Employees` WHERE `EmployeeId` = ? AND `ProjectId` = ?';
+
+                return new Promise((resolve, reject) => {
+                    connection.query(checkEmployeeInProject, [EmployeeId, projectIdToUse], (err, result) => {
+                        if (err) {
+                            console.error('Error checking employee in project:', err);
+                            return reject(err);
+                        }
+
+                        if (result.length > 0) {
+                            const checkEventEmployeeSql = 'SELECT * FROM `Event_Employees` WHERE `EmployeeId` = ? AND `EventId` = ?';
+
+                            connection.query(checkEventEmployeeSql, [EmployeeId, EventId], (err, result) => {
+                                if (err) {
+                                    console.error('Error checking employee events:', err);
+                                    return reject(err);
+                                }
+
+                                if (result.length === 0) {
+                                    // Only add employee if they are not already assigned to this event
+                                    const eventEmployeeSql = 'INSERT INTO `Event_Employees` (`EmployeeId`, `EventId`) VALUES (?, ?)';
+                                    connection.query(eventEmployeeSql, [EmployeeId, EventId], (err) => {
+                                        if (err) {
+                                            console.error('Error adding employee to event:', err);
+                                            return reject(err);
+                                        }
+                                        resolve();
+                                    });
+                                } else {
+                                    console.warn(`EmployeeId ${EmployeeId} is already assigned to EventId ${EventId}`);
+                                    resolve(); // Employee is already assigned, resolve the promise
+                                }
+                            });
+                        } else {
+                            console.warn(`EmployeeId ${EmployeeId} is not in project`);
+                            resolve(); // Employee is not part of the project, still resolve
+                        }
+                    });
                 });
             });
-        });
 
-        Promise.all(insertPromises).then(() => {
-            sendResponse(res, 201, 'success', 'Created Event successfully',
-                EventId,
-                EventTitle,
-                EventStart,
-                EventEnd,
-                ProjectId,
-                EmployeeIds
-            );
-        }).catch(err => {
-            console.error('Error adding employees to event', err);
-            sendResponse(res, 500, 'error', 'Error adding employee to event', null);
+            Promise.all(insertPromises).then(() => {
+                sendResponse(res, 201, 'success', 'Created event successfully',
+                    EventId,
+                    EventTitle,
+                    EventStart,
+                    EventEnd,
+                    projectIdToUse,
+                    EmployeeIds
+                );
+            }).catch(err => {
+                console.error('Error adding employees to event:', err);
+                sendResponse(res, 500, 'error', 'Error adding employees to event', null);
+            });
         });
-    });
+    }
 });
 
 
@@ -976,38 +1235,39 @@ router.post('/CreateNewEvent', (req, res) => {
  *         description: An error occurred while fetching master data
  */
 router.get('/GetMasterData', (req, res) => {
-    const projectsql = 'SELECT `ProjectId`, `ProjectName`, `ProjectStart`, `ProjectEnd`, `ProjectStatus` FROM `Projects`';
+    const projectsql = 'SELECT ProjectId, ProjectName, ProjectStart, ProjectEnd, ProjectStatus FROM Projects';
 
     connection.query(projectsql, (err, projects) => {
-        if(err) {
-            console.error('Error : ', err)
-            return sendResponse(res, 500, 'error', 'error fecting projects ', null);
+        if (err) {
+            console.error('Error:', err);
+            return sendResponse(res, 500, 'error', 'Error fetching projects', null);
         }
 
-        if(projects.length === 0) {
-            return sendResponse(res, 200, 'success', 'no project found');
+        if (projects.length === 0) {
+            return sendResponse(res, 200, 'success', 'No project found');
         }
 
         const moduleQueries = projects.map(project => {
-            return new Promise((reslove, reject) => {
-                const modulesql = 'SELECT * FROM `Modules` WHERE `ProjectId` = ?';
+            return new Promise((resolve, reject) => {
+                const modulesql = 'SELECT * FROM Modules WHERE ProjectId = ?';
                 connection.query(modulesql, [project.ProjectId], (err, modules) => {
-                    if(err) {
+                    if (err) {
                         console.error('Error fetching modules', err);
                         return reject();
                     }
 
-                    project.Modules = modules
-                    if(modules.length === 0 ) {
-                        return reslove(project);
+                    project.Modules = modules;
+                    if (modules.length === 0) {
+                        return resolve(project);
                     }
 
-                    const employeequeries = modules.map(module  => {
-                        return new Promise((reslove, reject) => {
+                    const employeequeries = modules.map(module => {
+                        return new Promise((resolve, reject) => {
                             const employeesql = `
-                                SELECT e.* 
+                                SELECT e.*, g.GeneralName AS EmployeePosition
                                 FROM Employees e
                                 JOIN module_employees me ON e.EmployeeId = me.EmployeeId
+                                JOIN General g ON e.RoleId = g.GeneralId
                                 WHERE me.ModuleId = ?
                             `;
                             connection.query(employeesql, [module.ModuleId], (err, employees) => {
@@ -1017,22 +1277,26 @@ router.get('/GetMasterData', (req, res) => {
                                 }
 
                                 module.Employees = employees;
-                                reslove(module);
+                                resolve(module);
                             });
                         });
                     });
-                    Promise.all(employeequeries).then(() => {
-                        reslove(project)
-                    }).catch(reject);
+
+                    Promise.all(employeequeries)
+                        .then(() => resolve(project))
+                        .catch(reject);
                 });
             });
         });
-        Promise.all(moduleQueries).then(()=> {
-            sendResponse(res, 200, 'success', 'Master data fetched successfully', projects);
-        }).catch(err => {
-            console.error('Error fetching Master data', err);
-            sendResponse(res, 500, 'error', 'Error fetching master da ta', null);
-        });
+
+        Promise.all(moduleQueries)
+            .then(() => {
+                sendResponse(res, 200, 'success', 'Master data fetched successfully', projects);
+            })
+            .catch(err => {
+                console.error('Error fetching Master data', err);
+                sendResponse(res, 500, 'error', 'Error fetching master data', null);
+            });
     });
 });
 
@@ -1156,11 +1420,11 @@ router.get('/GetChartData', async (req, res) => {
 
                                 monthData.detail.push({
                                     ProjectName: project.ProjectName,
-                                    Cost: formattedModuleCost.toFixed(2), // Format to 00.00
+                                    Cost: formattedModuleCost, // Format to 00.00
                                 });
 
                                 // Update the total cost for the month
-                                monthData.total = (parseFloat(monthData.total) + formattedModuleCost).toFixed(2);
+                                monthData.total = Math.floor(parseFloat(monthData.total) + formattedModuleCost);
                             }
                         }
                     }
@@ -1168,7 +1432,7 @@ router.get('/GetChartData', async (req, res) => {
 
                 // Prepare the final chart array
                 const chartData = Object.keys(months).map(year => ({
-                    year: year,
+                    year: +year,
                     chart: months[year],
                 }));
 
@@ -1181,7 +1445,6 @@ router.get('/GetChartData', async (req, res) => {
 });
 
 
-// Function to calculate the total cost for a project, summing the costs of all modules
 async function calculateModuleCost(projectId) {
     return new Promise((resolve, reject) => {
         const moduleSql = 'SELECT `ModuleId`, `ModuleAddDate`, `ModuleDueDate` FROM `Modules` WHERE ProjectId = ?';
@@ -1196,17 +1459,16 @@ async function calculateModuleCost(projectId) {
             // Process each module
             for (const module of modules) {
                 const moduleCost = await calculateModuleEmployeeCost(module);
-                totalModuleCost += parseFloat(moduleCost); // Ensure moduleCost is treated as a number
+                totalModuleCost += parseInt(moduleCost, 10); // Ensure moduleCost is treated as an integer
             }
 
-            resolve(totalModuleCost.toFixed(2)); // Format total cost to 00.00
+            resolve(totalModuleCost); // Return as an integer
         });
     });
 }
 
-// Function to calculate the cost for a specific module
 async function calculateModuleEmployeeCost(module) {
-    const { ModuleId, ModuleAddDate, ModuleDueDate } = module; // Destructure module details
+    const { ModuleId, ModuleAddDate, ModuleDueDate } = module;
 
     return new Promise((resolve, reject) => {
         const employeeSql = 'SELECT `EmployeeId`, `AddDate`, `DueDate` FROM `Module_Employees` WHERE ModuleId = ?';
@@ -1221,10 +1483,9 @@ async function calculateModuleEmployeeCost(module) {
             // Process each employee
             const employeePromises = employees.map(async (employee) => {
                 const { EmployeeId, AddDate, DueDate } = employee;
-                const addDate = AddDate || ModuleAddDate; // Use employee's AddDate or module's AddDate
-                let dueDate = DueDate || ModuleDueDate; // Use employee's DueDate or module's DueDate
+                const addDate = AddDate || ModuleAddDate;
+                let dueDate = DueDate || ModuleDueDate;
 
-                // Use current date if dueDate is in the future or null
                 const currentDate = new Date();
                 dueDate = (new Date(dueDate) > currentDate) ? currentDate : new Date(dueDate);
 
@@ -1235,13 +1496,13 @@ async function calculateModuleEmployeeCost(module) {
                 const employeeCost = await getEmployeeCost(EmployeeId);
 
                 // Calculate module cost for this employee
-                return (mandays * employeeCost).toFixed(2); // Format module cost to 00.00
+                return Math.floor(mandays * employeeCost); // Return cost as integer
             });
 
             try {
-                const costs = await Promise.all(employeePromises); // Await all promises
-                totalEmployeeCost = costs.reduce((sum, cost) => sum + parseFloat(cost), 0); // Ensure costs are numbers
-                resolve(totalEmployeeCost.toFixed(2)); // Return formatted cost
+                const costs = await Promise.all(employeePromises);
+                totalEmployeeCost = costs.reduce((sum, cost) => sum + cost, 0); // Ensure costs are integers
+                resolve(totalEmployeeCost); // Return as integer
             } catch (error) {
                 console.error('Error calculating employee costs:', error);
                 reject(error);
@@ -1352,7 +1613,6 @@ function getEmployeeCost(employeeId) {
 router.post('/GetModuleById', (req, res) => {
     const { ProjectId, ProjectName, ModuleName } = req.body;
 
-    // Check if either ProjectId or ProjectName is provided
     if (ProjectId || ProjectName) {
         const checkProject = `
             SELECT ProjectName, ProjectId 
@@ -1366,24 +1626,20 @@ router.post('/GetModuleById', (req, res) => {
                 return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
             }
 
-            // Check if any projects were found
             if (results.length > 0) {
-                const projectId = results[0].ProjectId; // Get the ProjectId of the found project
+                const projectId = results[0].ProjectId;
 
-                // Determine the SQL query based on whether ModuleName is provided
                 let selectModule;
                 const queryParams = [projectId];
 
                 if (ModuleName) {
-                    // If ModuleName is provided, fetch only that module
                     selectModule = `
                         SELECT ModuleId, ModuleName, ModuleAddDate, ModuleDueDate 
                         FROM Modules 
                         WHERE ProjectId = ? AND ModuleName = ?
                     `;
-                    queryParams.push(ModuleName); // Add ModuleName to the parameters
+                    queryParams.push(ModuleName);
                 } else {
-                    // If ModuleName is not provided, fetch all modules for the project
                     selectModule = `
                         SELECT ModuleId, ModuleName, ModuleAddDate, ModuleDueDate 
                         FROM Modules 
@@ -1391,14 +1647,12 @@ router.post('/GetModuleById', (req, res) => {
                     `;
                 }
 
-                // Execute the query to get modules
                 connection.query(selectModule, queryParams, (err, modules) => {
                     if (err) {
                         console.error('Error fetching modules:', err);
                         return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
                     }
 
-                    // Format the dates in the modules response
                     const formattedModules = modules.map(module => ({
                         ModuleId: module.ModuleId,
                         ModuleName: module.ModuleName,
@@ -1406,11 +1660,11 @@ router.post('/GetModuleById', (req, res) => {
                         ModuleDueDate: moment(module.ModuleDueDate).format('YYYY-MM-DD')
                     }));
 
-                    // Fetch all employees in the project
                     const getAllProjectEmployees = `
-                        SELECT EmployeeId, EmployeeName, EmployeePosition, EmployeeCost 
-                        FROM Employees 
-                        WHERE EmployeeId IN (
+                        SELECT e.EmployeeId, e.EmployeeName, g.GeneralName AS EmployeePosition, e.EmployeeCost 
+                        FROM Employees e
+                        JOIN General g ON e.RoleId = g.GeneralId
+                        WHERE e.EmployeeId IN (
                             SELECT EmployeeId 
                             FROM Project_Employees 
                             WHERE ProjectId = ?
@@ -1423,7 +1677,6 @@ router.post('/GetModuleById', (req, res) => {
                             return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
                         }
 
-                        // Create a function to check employee status in module
                         const checkEmployeeInModule = (moduleId, employeeId) => {
                             return new Promise((resolve) => {
                                 const employeeInModuleQuery = `
@@ -1434,44 +1687,50 @@ router.post('/GetModuleById', (req, res) => {
                                 connection.query(employeeInModuleQuery, [moduleId, employeeId], (err, results) => {
                                     if (err) {
                                         console.error('Error checking employee in module:', err);
-                                        resolve(0); // Assume not in module on error
+                                        resolve(0);
                                     } else {
-                                        resolve(results.length > 0 ? 1 : 0); // 1 if in module, 0 if not
+                                        resolve(results.length > 0 ? 1 : 0);
                                     }
                                 });
                             });
                         };
 
-                        // Create an array of promises for each module to get employees
                         const modulePromises = formattedModules.map(async (module) => {
-                            // Get employees for this module
+                            const moduleStart = moment(module.ModuleAddDate);
+                            const moduleEnd = moment(module.ModuleDueDate);
+                            const moduleDays = moduleEnd.diff(moduleStart, 'days') + 1;
+
+                            let moduleCost = 0;
+
                             const employeePromises = allEmployees.map(async (employee) => {
                                 const inModule = await checkEmployeeInModule(module.ModuleId, employee.EmployeeId);
+                                const employeeCost = inModule ? employee.EmployeeCost * moduleDays : 0;
+                                moduleCost += employeeCost;
+
                                 return {
                                     EmployeeName: employee.EmployeeName,
                                     EmployeePosition: employee.EmployeePosition,
                                     EmployeeCost: employee.EmployeeCost,
-                                    InModule: inModule // 1 if in the module, 0 if not
+                                    InModule: inModule
                                 };
                             });
 
                             const employees = await Promise.all(employeePromises);
                             return {
                                 ...module,
-                                Employees: employees // Add employee details to the module
+                                Employees: employees,
+                                ModuleCost: moduleCost // Add the calculated module cost here
                             };
                         });
 
-                        // Resolve all module promises
                         Promise.all(modulePromises)
                             .then(modulesWithEmployees => {
-                                // Return the project and its modules with employee details
                                 return res.status(200).json({
                                     status: 'success',
                                     message: 'Project and modules retrieved successfully',
                                     data: {
-                                        project: results[0], // Project details
-                                        modules: modulesWithEmployees // Formatted module details with employees
+                                        project: results[0],
+                                        modules: modulesWithEmployees
                                     }
                                 });
                             })
@@ -1566,8 +1825,8 @@ router.post('/GetEmployeeInProject', (req, res) => {
 
         // Check if any projects were found
         if (results.length > 0) {
-            const projectId = results[0].ProjectId; // Get the ProjectId of the found project
-            const projectName = results[0].ProjectName; // Get the ProjectName of the found project
+            const projectId = results[0].ProjectId;
+            const projectName = results[0].ProjectName;
 
             // Fetch all employees associated with the project
             const checkProjectEmployee = `
@@ -1582,7 +1841,6 @@ router.post('/GetEmployeeInProject', (req, res) => {
                     return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
                 }
 
-                // If there are no employees, return an empty array
                 if (projectEmployees.length === 0) {
                     return res.status(200).json({
                         status: 'success',
@@ -1599,21 +1857,21 @@ router.post('/GetEmployeeInProject', (req, res) => {
                 const employeeQueries = projectEmployees.map(projectEmployee => {
                     return new Promise((resolve, reject) => {
                         const getEmployeeInProject = `
-                            SELECT EmployeeId, EmployeeName, EmployeePosition, EmployeeCost 
-                            FROM Employees 
-                            WHERE EmployeeId = ?
+                            SELECT e.EmployeeId, e.EmployeeName, g.GeneralName AS EmployeePosition, e.EmployeeCost
+                            FROM Employees e
+                            JOIN General g ON e.RoleId = g.GeneralId
+                            WHERE e.EmployeeId = ?
                         `;
 
                         connection.query(getEmployeeInProject, [projectEmployee.EmployeeId], (err, employeeDetails) => {
                             if (err) {
-                                reject(err); // Reject if there's an error
+                                reject(err);
                             } else {
-                                // Add InModule field set to 0 and keep EmployeeCost as an integer
                                 const employeeInfo = {
-                                    ...employeeDetails[0], // Spread existing employee details
-                                    InModule: 0 // Set InModule to 0
+                                    ...employeeDetails[0],
+                                    InModule: 0
                                 };
-                                resolve(employeeInfo); // Resolve with employee details including InModule
+                                resolve(employeeInfo);
                             }
                         });
                     });
@@ -1622,7 +1880,6 @@ router.post('/GetEmployeeInProject', (req, res) => {
                 // Wait for all employee queries to complete
                 Promise.all(employeeQueries)
                     .then(employeeResults => {
-                        // Return the project employees along with ProjectId and ProjectName
                         return res.status(200).json({
                             status: 'success',
                             message: 'Employees retrieved successfully',
@@ -1631,7 +1888,7 @@ router.post('/GetEmployeeInProject', (req, res) => {
                                 ProjectName: projectName,
                                 employees: employeeResults.map(employee => ({
                                     ...employee,
-                                    EmployeeCost: parseInt(employee.EmployeeCost, 10) // Ensure EmployeeCost is an integer
+                                    EmployeeCost: parseInt(employee.EmployeeCost, 10)
                                 }))
                             }
                         });
@@ -1644,6 +1901,131 @@ router.post('/GetEmployeeInProject', (req, res) => {
         } else {
             return res.status(404).json({ status: 'error', message: 'No project found', data: null });
         }
+    });
+});
+
+
+router.get('/GetProjectDesc', (req, res) => {
+    // SQL query to select the latest project based on ProjectStart date
+    const selectLatest = `
+        SELECT 
+            ProjectName 
+        FROM 
+            Projects
+        ORDER BY 
+            ProjectStart DESC
+        LIMIT 1
+    `;
+
+    // SQL query to get the total number of projects and their total cost
+    const countProjectsAndCost = `
+        SELECT 
+            COUNT(*) AS TotalProjects,
+            SUM(ProjectCost) AS TotalProjectCost
+        FROM 
+            Projects
+    `;
+
+    // Fetch the latest project
+    connection.query(selectLatest, (err, latestResults) => {
+        if (err) {
+            console.error('Error fetching latest project:', err);
+            return res.status(500).json({ status: 'error', message: 'Database query error' });
+        }
+
+        // Fetch the total number of projects and their total cost
+        connection.query(countProjectsAndCost, (err, countResults) => {
+            if (err) {
+                console.error('Error fetching total projects and cost:', err);
+                return res.status(500).json({ status: 'error', message: 'Database query error' });
+            }
+
+            // Check if a latest project was found
+            const latestProjectName = latestResults.length > 0 ? latestResults[0].ProjectName : "";
+
+            // Get the total project count and cost
+            const totalProjects = countResults.length > 0 ? countResults[0].TotalProjects : 0;
+            // Convert totalProjectCost to a number without decimals
+            const totalProjectCost = countResults.length > 0 ? Math.floor(countResults[0].TotalProjectCost) : 0;
+
+            // Send the response
+            res.status(200).json({
+                status: 'success',
+                data: {
+                    LastedProject: latestProjectName,
+                    TotalProject: totalProjects,
+                    TotalCost: totalProjectCost, // Total cost of all projects as an integer
+                }
+            });
+        });
+    });
+});
+
+router.get('/GetAllEmployees', (req, res) => {
+    const sql = `
+        SELECT e.EmployeeId, e.EmployeeName, CAST(e.EmployeeCost AS SIGNED) AS EmployeeCost, g.GeneralName AS EmployeePosition
+        FROM Employees e
+        LEFT JOIN General g ON g.GeneralId = e.RoleId
+    `;
+
+    connection.query(sql, (err, employees) => {
+        if (err) {
+            console.error('Error fetching employees:', err);
+            return sendResponse(res, 500, 'error', 'Error fetching employees', null);
+        }
+
+        if (employees.length === 0) {
+            return sendResponse(res, 200, 'success', 'No employees found', null);
+        }
+
+        sendResponse(res, 200, 'success', 'Employees retrieved successfully', employees);
+    });
+});
+
+router.post('/GetModuleInProject', (req, res) => {
+    const { ProjectName, ProjectId } = req.body;
+
+    if (!ProjectId && !ProjectName) {
+        return res.status(400).json({ status: 'error', message: 'ProjectId or ProjectName must be provided', data: null });
+    }
+
+    const checkProject = `
+        SELECT ProjectId, ProjectName
+        FROM Projects 
+        WHERE (ProjectId = ? OR ProjectName = ?)
+    `;
+
+    connection.query(checkProject, [ProjectId, ProjectName], (err, projects) => {
+        if (err) {
+            console.error('Error fetching project:', err);
+            return res.status(500).json({ status: 'error', message: 'Database query error', data: null });
+        }
+
+        if (projects.length === 0) {
+            return res.status(404).json({ status: 'error', message: 'Project not found', data: null });
+        }
+
+        // Retrieve the ProjectId from the result
+        const projectIdToUse = projects[0].ProjectId;
+
+        const moduleQuery = `
+            SELECT ModuleId, ModuleName, ModuleAddDate, ModuleDueDate
+            FROM Modules
+            WHERE ProjectId = ?
+        `;
+
+        connection.query(moduleQuery, [projectIdToUse], (err, modules) => {
+            if (err) {
+                console.error('Error fetching modules:', err);
+                return res.status(500).json({ status: 'error', message: 'Error fetching modules', data: null });
+            }
+
+            if (modules.length === 0) {
+                return res.status(200).json({ status: 'success', message: 'No modules found for this project', data: [] });
+            }
+
+            res.status(200).json({ status: 'success', message: 'Modules retrieved successfully', data: modules });
+        });
     });
 });
 
